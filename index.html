@@ -378,30 +378,12 @@
 
     <script>
         let currentUrl = '';
-        let selectedResolution = '1080';
-
-        function getVideoId(url) {
-            const patterns = [
-                /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\?\/]+)/,
-                /youtube\.com\/shorts\/([^&\?\/]+)/
-            ];
-            for (const pattern of patterns) {
-                const match = url.match(pattern);
-                if (match) return match[1];
-            }
-            return null;
-        }
+        let selectedResolution = null;
 
         async function analyzeVideo() {
             const url = document.getElementById('urlInput').value.trim();
             if (!url) {
                 showError('Please enter a YouTube URL');
-                return;
-            }
-
-            const videoId = getVideoId(url);
-            if (!videoId) {
-                showError('Invalid YouTube URL');
                 return;
             }
 
@@ -413,21 +395,20 @@
             document.getElementById('analyzeBtn').disabled = true;
 
             try {
-                // Use YouTube's oEmbed API for video info (no auth needed)
-                const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
-                const response = await fetch(oembedUrl);
-
-                if (!response.ok) {
-                    throw new Error('Could not fetch video info');
-                }
+                const response = await fetch('/api/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url })
+                });
 
                 const data = await response.json();
 
-                displayVideoInfo({
-                    title: data.title,
-                    thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
-                    channel: data.author_name
-                });
+                if (data.error) {
+                    showError(data.error);
+                    return;
+                }
+
+                displayVideoInfo(data);
             } catch (error) {
                 showError('Failed to analyze video. Please check the URL and try again.');
             } finally {
@@ -436,36 +417,44 @@
             }
         }
 
+        function formatSize(bytes) {
+            if (!bytes) return '';
+            if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' GB';
+            if (bytes >= 1048576) return (bytes / 1048576).toFixed(0) + ' MB';
+            return (bytes / 1024).toFixed(0) + ' KB';
+        }
+
+        function formatDuration(seconds) {
+            if (!seconds) return '';
+            const hrs = Math.floor(seconds / 3600);
+            const mins = Math.floor((seconds % 3600) / 60);
+            const secs = seconds % 60;
+            if (hrs > 0) return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+
         function displayVideoInfo(data) {
             document.getElementById('thumbnail').src = data.thumbnail;
             document.getElementById('videoTitle').textContent = data.title;
-            document.getElementById('channelName').textContent = data.channel;
+            document.getElementById('channelName').textContent = data.channel + (data.duration ? ' • ' + formatDuration(data.duration) : '');
 
             const formatsGrid = document.getElementById('formatsGrid');
             formatsGrid.innerHTML = '';
 
-            const formats = [
-                { resolution: '2160p', height: '2160' },
-                { resolution: '1440p', height: '1440' },
-                { resolution: '1080p', height: '1080' },
-                { resolution: '720p', height: '720' },
-                { resolution: '480p', height: '480' },
-                { resolution: '360p', height: '360' },
-            ];
-
-            formats.forEach((format, index) => {
+            data.formats.forEach((format, index) => {
                 const card = document.createElement('div');
-                card.className = 'format-card' + (format.height === '1080' ? ' selected' : '');
+                card.className = 'format-card' + (index === 0 ? ' selected' : '');
                 card.dataset.resolution = format.height;
                 card.innerHTML = `
                     <div class="resolution">${format.resolution}</div>
-                    <div class="size">MP4</div>
+                    <div class="size">${formatSize(format.filesize) || 'MP4'}</div>
                 `;
                 card.onclick = () => selectFormat(card, format.height);
                 formatsGrid.appendChild(card);
+
+                if (index === 0) selectedResolution = format.height;
             });
 
-            selectedResolution = '1080';
             document.getElementById('videoInfo').style.display = 'block';
             document.getElementById('progressContainer').style.display = 'none';
         }
@@ -476,17 +465,71 @@
             selectedResolution = resolution;
         }
 
-        function downloadVideo() {
-            if (!currentUrl) {
-                showError('Please analyze a video first');
+        async function downloadVideo() {
+            if (!currentUrl || !selectedResolution) {
+                showError('Please analyze a video and select quality first');
                 return;
             }
 
-            // Open cobalt.tools with the URL - it handles all the YouTube BS
-            const cobaltUrl = `https://cobalt.tools/#${encodeURIComponent(currentUrl)}`;
-            window.open(cobaltUrl, '_blank');
+            hideError();
+            hideSuccess();
+            document.getElementById('downloadBtn').disabled = true;
+            document.getElementById('progressContainer').style.display = 'block';
+            document.getElementById('progressFill').style.width = '0%';
+            document.getElementById('progressText').textContent = 'Starting download...';
 
-            showSuccess(`Cobalt opened in a new tab. Select your quality and download there.`);
+            try {
+                const response = await fetch('/api/download', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        url: currentUrl,
+                        resolution: selectedResolution
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    showError(data.error);
+                    document.getElementById('progressContainer').style.display = 'none';
+                    document.getElementById('downloadBtn').disabled = false;
+                    return;
+                }
+
+                pollProgress(data.download_id, data.filename);
+            } catch (error) {
+                showError('Download failed. Please try again.');
+                document.getElementById('progressContainer').style.display = 'none';
+                document.getElementById('downloadBtn').disabled = false;
+            }
+        }
+
+        async function pollProgress(downloadId, filename) {
+            const interval = setInterval(async () => {
+                try {
+                    const response = await fetch(`/api/progress/${downloadId}`);
+                    const data = await response.json();
+
+                    document.getElementById('progressFill').style.width = data.progress + '%';
+                    document.getElementById('progressText').textContent = `Downloading... ${data.progress}%`;
+
+                    if (data.status === 'complete' || data.status === 'finished') {
+                        clearInterval(interval);
+                        document.getElementById('progressFill').style.width = '100%';
+                        document.getElementById('progressText').textContent = 'Download ready!';
+
+                        // Trigger browser download
+                        window.location.href = `/api/file/${downloadId}`;
+
+                        showSuccess(`Your download of "${filename}" has started.`);
+                        document.getElementById('downloadBtn').disabled = false;
+                    }
+                } catch (error) {
+                    clearInterval(interval);
+                    document.getElementById('downloadBtn').disabled = false;
+                }
+            }, 500);
         }
 
         function showError(message) {
