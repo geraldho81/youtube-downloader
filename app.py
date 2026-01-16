@@ -14,23 +14,33 @@ CORS(app)
 # Store download progress and file paths
 download_progress = {}
 
-# Common yt-dlp options to help avoid bot detection
-YDL_BASE_OPTS = {
-    'quiet': True,
-    'no_warnings': True,
-    'extractor_args': {
-        'youtube': {
-            'player_client': ['web', 'android'],
-            'player_skip': ['webpage', 'configs'],
-        }
-    },
-    'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-us,en;q=0.5',
-        'Sec-Fetch-Mode': 'navigate',
-    },
-}
+# Path to cookies file (set via environment variable or place cookies.txt in project root)
+COOKIES_FILE = os.environ.get('COOKIES_FILE', os.path.join(os.path.dirname(__file__), 'cookies.txt'))
+
+def get_ydl_opts():
+    """Get yt-dlp options with cookies if available."""
+    opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['web', 'android'],
+                'player_skip': ['webpage', 'configs'],
+            }
+        },
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-us,en;q=0.5',
+            'Sec-Fetch-Mode': 'navigate',
+        },
+    }
+
+    # Add cookies if file exists
+    if os.path.exists(COOKIES_FILE):
+        opts['cookiefile'] = COOKIES_FILE
+
+    return opts
 
 # Create a temp directory for downloads that persists across requests
 TEMP_DOWNLOADS_DIR = tempfile.mkdtemp(prefix='vidgrab_')
@@ -53,7 +63,7 @@ def analyze_video():
         return jsonify({'error': 'No URL provided'}), 400
 
     try:
-        ydl_opts = {**YDL_BASE_OPTS}
+        ydl_opts = get_ydl_opts()
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -134,7 +144,7 @@ def download_video():
                 download_progress[download_id]['status'] = 'finished'
 
         ydl_opts = {
-            **YDL_BASE_OPTS,
+            **get_ydl_opts(),
             'format': f'bestvideo[height<={resolution}][vcodec^=avc1]+bestaudio[acodec^=mp4a]/bestvideo[height<={resolution}]+bestaudio/best[height<={resolution}]',
             'outtmpl': os.path.join(TEMP_DOWNLOADS_DIR, '%(title)s.%(ext)s'),
             'merge_output_format': 'mp4',
