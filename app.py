@@ -14,6 +14,24 @@ CORS(app)
 # Store download progress and file paths
 download_progress = {}
 
+# Common yt-dlp options to help avoid bot detection
+YDL_BASE_OPTS = {
+    'quiet': True,
+    'no_warnings': True,
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['web', 'android'],
+            'player_skip': ['webpage', 'configs'],
+        }
+    },
+    'http_headers': {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-us,en;q=0.5',
+        'Sec-Fetch-Mode': 'navigate',
+    },
+}
+
 # Create a temp directory for downloads that persists across requests
 TEMP_DOWNLOADS_DIR = tempfile.mkdtemp(prefix='vidgrab_')
 
@@ -35,10 +53,7 @@ def analyze_video():
         return jsonify({'error': 'No URL provided'}), 400
 
     try:
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-        }
+        ydl_opts = {**YDL_BASE_OPTS}
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -119,11 +134,11 @@ def download_video():
                 download_progress[download_id]['status'] = 'finished'
 
         ydl_opts = {
+            **YDL_BASE_OPTS,
             'format': f'bestvideo[height<={resolution}][vcodec^=avc1]+bestaudio[acodec^=mp4a]/bestvideo[height<={resolution}]+bestaudio/best[height<={resolution}]',
             'outtmpl': os.path.join(TEMP_DOWNLOADS_DIR, '%(title)s.%(ext)s'),
             'merge_output_format': 'mp4',
             'progress_hooks': [progress_hook],
-            'quiet': True,
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
