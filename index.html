@@ -377,7 +377,6 @@
     </div>
 
     <script>
-        const COBALT_API = 'https://api.cobalt.tools';
         let currentUrl = '';
         let selectedResolution = '1080';
 
@@ -477,66 +476,17 @@
             selectedResolution = resolution;
         }
 
-        async function downloadVideo() {
+        function downloadVideo() {
             if (!currentUrl) {
                 showError('Please analyze a video first');
                 return;
             }
 
-            hideError();
-            hideSuccess();
-            document.getElementById('downloadBtn').disabled = true;
-            document.getElementById('progressContainer').style.display = 'block';
-            document.getElementById('progressFill').style.width = '50%';
-            document.getElementById('progressText').textContent = 'Getting download link...';
+            // Open cobalt.tools with the URL - it handles all the YouTube BS
+            const cobaltUrl = `https://cobalt.tools/#${encodeURIComponent(currentUrl)}`;
+            window.open(cobaltUrl, '_blank');
 
-            try {
-                const response = await fetch(COBALT_API, {
-                    method: 'POST',
-                    headers: {
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        url: currentUrl,
-                        videoQuality: selectedResolution,
-                        filenameStyle: 'basic',
-                    })
-                });
-
-                const data = await response.json();
-
-                if (data.status === 'error') {
-                    throw new Error(data.text || 'Failed to get download link');
-                }
-
-                let downloadUrl = null;
-
-                if (data.status === 'redirect' || data.status === 'tunnel') {
-                    downloadUrl = data.url;
-                } else if (data.status === 'picker' && data.picker) {
-                    // Find video option
-                    const video = data.picker.find(p => p.type === 'video') || data.picker[0];
-                    downloadUrl = video?.url;
-                }
-
-                if (downloadUrl) {
-                    document.getElementById('progressFill').style.width = '100%';
-                    document.getElementById('progressText').textContent = 'Download starting...';
-
-                    // Open download in new tab
-                    window.open(downloadUrl, '_blank');
-
-                    showSuccess(`Your download has started. Check your browser's downloads.`);
-                } else {
-                    throw new Error('Could not get download URL');
-                }
-            } catch (error) {
-                showError(error.message || 'Download failed. Please try again.');
-                document.getElementById('progressContainer').style.display = 'none';
-            } finally {
-                document.getElementById('downloadBtn').disabled = false;
-            }
+            showSuccess(`Cobalt opened in a new tab. Select your quality and download there.`);
         }
 
         function showError(message) {
