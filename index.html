@@ -496,8 +496,8 @@
             hideSuccess();
             document.getElementById('downloadBtn').disabled = true;
             document.getElementById('progressContainer').style.display = 'block';
-            document.getElementById('progressFill').style.width = '0%';
-            document.getElementById('progressText').textContent = 'Starting download...';
+            document.getElementById('progressFill').style.width = '50%';
+            document.getElementById('progressText').textContent = 'Getting download link...';
 
             try {
                 const response = await fetch('/api/download', {
@@ -514,48 +514,25 @@
                 if (data.error) {
                     showError(data.error);
                     document.getElementById('progressContainer').style.display = 'none';
+                    document.getElementById('downloadBtn').disabled = false;
                     return;
                 }
 
-                // Poll for progress
-                pollProgress(data.download_id, data.filename);
+                if (data.download_url) {
+                    document.getElementById('progressFill').style.width = '100%';
+                    document.getElementById('progressText').textContent = 'Download starting...';
+
+                    // Open download URL directly
+                    window.location.href = data.download_url;
+
+                    showSuccess(`Your download has started. Check your browser's download manager.`);
+                    document.getElementById('downloadBtn').disabled = false;
+                }
             } catch (error) {
                 showError('Download failed. Please try again.');
                 document.getElementById('progressContainer').style.display = 'none';
-            } finally {
                 document.getElementById('downloadBtn').disabled = false;
             }
-        }
-
-        async function pollProgress(downloadId, filename) {
-            const interval = setInterval(async () => {
-                try {
-                    const response = await fetch(`/api/progress/${downloadId}`);
-                    const data = await response.json();
-
-                    document.getElementById('progressFill').style.width = data.progress + '%';
-                    document.getElementById('progressText').textContent = `Downloading... ${data.progress}%`;
-
-                    if (data.status === 'complete' || data.status === 'finished') {
-                        clearInterval(interval);
-                        document.getElementById('progressFill').style.width = '100%';
-                        document.getElementById('progressText').textContent = 'Preparing file...';
-
-                        // Automatically trigger browser download
-                        const link = document.createElement('a');
-                        link.href = `/api/file/${encodeURIComponent(downloadId)}`;
-                        link.download = filename;
-                        document.body.appendChild(link);
-                        link.click();
-                        document.body.removeChild(link);
-
-                        document.getElementById('progressText').textContent = 'Download started!';
-                        showSuccess(`Your download of "${filename}" has started. Check your browser's download manager.`);
-                    }
-                } catch (error) {
-                    clearInterval(interval);
-                }
-            }, 500);
         }
 
         function showError(message) {

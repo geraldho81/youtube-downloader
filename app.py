@@ -1,49 +1,13 @@
-from flask import Flask, request, jsonify, send_file, render_template, after_this_request
+from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-import yt_dlp
-import os
+import requests
 import re
-import tempfile
-import threading
-import uuid
-import shutil
 
 app = Flask(__name__, template_folder=".")
 CORS(app)
 
-# Store download progress and file paths
-download_progress = {}
-
-# Path to cookies file (set via environment variable or place cookies.txt in project root)
-COOKIES_FILE = os.environ.get('COOKIES_FILE', os.path.join(os.path.dirname(__file__), 'cookies.txt'))
-
-def get_ydl_opts():
-    """Get yt-dlp options with cookies if available."""
-    opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['web', 'android'],
-                'player_skip': ['webpage', 'configs'],
-            }
-        },
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-us,en;q=0.5',
-            'Sec-Fetch-Mode': 'navigate',
-        },
-    }
-
-    # Add cookies if file exists
-    if os.path.exists(COOKIES_FILE):
-        opts['cookiefile'] = COOKIES_FILE
-
-    return opts
-
-# Create a temp directory for downloads that persists across requests
-TEMP_DOWNLOADS_DIR = tempfile.mkdtemp(prefix='vidgrab_')
+# Cobalt API endpoint (handles YouTube's bot detection)
+COBALT_API = "https://api.cobalt.tools"
 
 def sanitize_filename(filename):
     """Remove invalid characters from filename."""
@@ -63,63 +27,62 @@ def analyze_video():
         return jsonify({'error': 'No URL provided'}), 400
 
     try:
-        ydl_opts = get_ydl_opts()
+        # Use Cobalt API to get video info
+        response = requests.post(
+            COBALT_API,
+            json={
+                'url': url,
+                'videoQuality': '1080',
+                'filenameStyle': 'basic',
+            },
+            headers={
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+            },
+            timeout=30
+        )
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        if response.status_code != 200:
+            return jsonify({'error': 'Failed to analyze video'}), 400
 
-            # Get video formats with both video and audio
-            formats = []
-            seen_resolutions = set()
+        cobalt_data = response.json()
 
-            for f in info.get('formats', []):
-                # Get formats that have video
-                if f.get('vcodec') != 'none' and f.get('height'):
-                    resolution = f'{f["height"]}p'
-                    format_id = f.get('format_id', '')
-                    ext = f.get('ext', 'mp4')
-                    filesize = f.get('filesize') or f.get('filesize_approx', 0)
+        # Cobalt returns a direct download URL or picker for multiple options
+        # For simplicity, we'll offer common resolutions
+        formats = [
+            {'resolution': '2160p', 'height': 2160, 'quality': '4k'},
+            {'resolution': '1440p', 'height': 1440, 'quality': '1440'},
+            {'resolution': '1080p', 'height': 1080, 'quality': '1080'},
+            {'resolution': '720p', 'height': 720, 'quality': '720'},
+            {'resolution': '480p', 'height': 480, 'quality': '480'},
+            {'resolution': '360p', 'height': 360, 'quality': '360'},
+        ]
 
-                    # Create a unique key for this resolution
-                    key = f"{resolution}_{ext}"
+        # Extract video ID for thumbnail
+        video_id = None
+        if 'youtube.com' in url or 'youtu.be' in url:
+            if 'youtu.be/' in url:
+                video_id = url.split('youtu.be/')[-1].split('?')[0]
+            elif 'v=' in url:
+                video_id = url.split('v=')[-1].split('&')[0]
 
-                    if key not in seen_resolutions:
-                        seen_resolutions.add(key)
-                        formats.append({
-                            'format_id': format_id,
-                            'resolution': resolution,
-                            'height': f['height'],
-                            'ext': ext,
-                            'filesize': filesize,
-                            'has_audio': f.get('acodec') != 'none'
-                        })
+        thumbnail = f'https://img.youtube.com/vi/{video_id}/maxresdefault.jpg' if video_id else ''
 
-            # Sort by resolution (height) descending
-            formats.sort(key=lambda x: x['height'], reverse=True)
-
-            # Remove duplicates keeping best quality per resolution
-            unique_formats = []
-            seen_heights = set()
-            for f in formats:
-                if f['height'] not in seen_heights:
-                    seen_heights.add(f['height'])
-                    unique_formats.append(f)
-
-            return jsonify({
-                'title': info.get('title', 'Unknown'),
-                'thumbnail': info.get('thumbnail', ''),
-                'duration': info.get('duration', 0),
-                'channel': info.get('channel', 'Unknown'),
-                'view_count': info.get('view_count', 0),
-                'formats': unique_formats[:8]  # Limit to top 8 formats
-            })
+        return jsonify({
+            'title': cobalt_data.get('filename', 'Video'),
+            'thumbnail': thumbnail,
+            'duration': 0,
+            'channel': '',
+            'view_count': 0,
+            'formats': formats
+        })
 
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
 @app.route('/api/download', methods=['POST'])
 def download_video():
-    """Download a video with the specified format."""
+    """Get download URL for a video."""
     data = request.json
     url = data.get('url', '')
     resolution = data.get('resolution', '720')
@@ -128,80 +91,64 @@ def download_video():
         return jsonify({'error': 'No URL provided'}), 400
 
     try:
-        # Create a unique download ID
-        download_id = str(uuid.uuid4())
-        download_progress[download_id] = {'progress': 0, 'status': 'starting'}
+        # Request download from Cobalt
+        response = requests.post(
+            COBALT_API,
+            json={
+                'url': url,
+                'videoQuality': str(resolution),
+                'filenameStyle': 'basic',
+            },
+            headers={
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+            },
+            timeout=30
+        )
 
-        def progress_hook(d):
-            if d['status'] == 'downloading':
-                total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
-                downloaded = d.get('downloaded_bytes', 0)
-                if total > 0:
-                    download_progress[download_id]['progress'] = int((downloaded / total) * 100)
-                download_progress[download_id]['status'] = 'downloading'
-            elif d['status'] == 'finished':
-                download_progress[download_id]['progress'] = 100
-                download_progress[download_id]['status'] = 'finished'
+        if response.status_code != 200:
+            return jsonify({'error': 'Failed to get download link'}), 400
 
-        ydl_opts = {
-            **get_ydl_opts(),
-            'format': f'bestvideo[height<={resolution}][vcodec^=avc1]+bestaudio[acodec^=mp4a]/bestvideo[height<={resolution}]+bestaudio/best[height<={resolution}]',
-            'outtmpl': os.path.join(TEMP_DOWNLOADS_DIR, '%(title)s.%(ext)s'),
-            'merge_output_format': 'mp4',
-            'progress_hooks': [progress_hook],
-        }
+        cobalt_data = response.json()
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            # Handle merged format extension
-            if not os.path.exists(filename):
-                filename = filename.rsplit('.', 1)[0] + '.mp4'
+        # Cobalt returns different response types
+        status = cobalt_data.get('status')
 
-            download_progress[download_id]['filepath'] = filename
-            download_progress[download_id]['status'] = 'complete'
+        if status == 'error':
+            return jsonify({'error': cobalt_data.get('text', 'Unknown error')}), 400
 
+        if status == 'redirect' or status == 'tunnel':
+            # Direct download URL
+            download_url = cobalt_data.get('url')
+            filename = cobalt_data.get('filename', 'video.mp4')
             return jsonify({
                 'success': True,
-                'download_id': download_id,
-                'filename': os.path.basename(filename)
+                'download_url': download_url,
+                'filename': filename
             })
+
+        if status == 'picker':
+            # Multiple options available, get the video one
+            picker = cobalt_data.get('picker', [])
+            for item in picker:
+                if item.get('type') == 'video':
+                    return jsonify({
+                        'success': True,
+                        'download_url': item.get('url'),
+                        'filename': 'video.mp4'
+                    })
+            # Fallback to first item
+            if picker:
+                return jsonify({
+                    'success': True,
+                    'download_url': picker[0].get('url'),
+                    'filename': 'video.mp4'
+                })
+
+        return jsonify({'error': 'Could not get download URL'}), 400
 
     except Exception as e:
         return jsonify({'error': str(e)}), 400
-
-@app.route('/api/progress/<download_id>')
-def get_progress(download_id):
-    """Get download progress."""
-    if download_id in download_progress:
-        return jsonify(download_progress[download_id])
-    return jsonify({'error': 'Download not found'}), 404
-
-@app.route('/api/file/<download_id>')
-def serve_file(download_id):
-    """Serve a downloaded file and clean up after."""
-    if download_id not in download_progress:
-        return jsonify({'error': 'Download not found'}), 404
-
-    filepath = download_progress[download_id].get('filepath')
-    if not filepath or not os.path.exists(filepath):
-        return jsonify({'error': 'File not found'}), 404
-
-    filename = os.path.basename(filepath)
-
-    @after_this_request
-    def cleanup(response):
-        # Clean up the temp file after sending
-        try:
-            if os.path.exists(filepath):
-                os.remove(filepath)
-            # Clean up the progress entry
-            download_progress.pop(download_id, None)
-        except Exception:
-            pass
-        return response
-
-    return send_file(filepath, as_attachment=True, download_name=filename)
 
 if __name__ == '__main__':
     app.run(debug=True, port=5001)
